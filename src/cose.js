@@ -87,7 +87,27 @@ function parsePayload(parsedCose) {
     return Promise.resolve(payload);
 }
 
-function parseSignature(parsedCose, key) {
+
+function parseSignature(parsedCose, key, header, payload) {
+    var notBefore = new Date(payload.nbf);
+    var expires = new Date(payload.exp);
+    var now = new Date();
+
+    if(notBefore < now || now > expires) {
+        const keyId = payload.iss + "#" + header.kind;
+        const publicKey = key.verificationMethod.find(vm => vm.id === keyId);
+        if(publicKey) {
+            return validateSignature(parsedCose, publicKey.publicKeyJwk);
+        }
+    }
+
+    return Promise.resolve({
+        valid: false,
+        sig: []
+    });
+}
+
+function validateSignature(parsedCose, key) {
     let valid = false;
     if(parsedCose.tag === 18)
     {
@@ -102,32 +122,24 @@ function parseSignature(parsedCose, key) {
           ];
         const sig = cbor.encode(SigStructure);
         
-        return crypto.subtle.importKey(
-            "jwk",
-            key.verificationMethod[0].publicKeyJwk,
-            {
-                name: "ECDSA",
-                namedCurve: "P-256"
-              },
-            false,
-            ["verify"])
-        .then(publicKey => crypto.subtle.verify({
+        return crypto.subtle.importKey("jwk", key, {name: "ECDSA",namedCurve: "P-256"}, false, ["verify"])
+            .then(publicKey => crypto.subtle.verify({
                     name: "ECDSA",
                     hash: {name: "SHA-256"},
                 }, 
                 publicKey,
                 parsedCose.value[3],
                 sig)
-        )
-        .then(valid => {return {
-            valid,
-            sig: parsedCose.value[3]
-        }})
+            )
+            .then(valid => {return {
+                valid,
+                sig: parsedCose.value[3]
+            }})
     }
 
     Promise.resolve({
         valid,
-        sig: parsedCose.value[3]
+        sig: []
     });
 }
 
@@ -141,15 +153,18 @@ function parseCose(cose, key) {
         
         return Promise.all([
             parseHeader(parsedCose),
-            parsePayload(parsedCose),
-            parseSignature(parsedCose, key)]
+            parsePayload(parsedCose)]
         ).then(r => { 
-            const [header, payload, signature] = r;
-            return {
-                header, 
-                payload, 
-                signature
-            }
+            const [header, payload] = r;
+
+            return parseSignature(parsedCose, key, header, payload)
+                .then(signature => { 
+                    return {
+                        header, 
+                        payload, 
+                        signature
+                    }
+                });
         });
 
     } catch (err) {
